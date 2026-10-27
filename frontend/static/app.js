@@ -61,6 +61,9 @@ const responseStatus = document.querySelector("#response-status");
 const responseMedia = document.querySelector("#response-media");
 const responseOutput = document.querySelector("#response-output");
 const aspectButtons = document.querySelectorAll("[data-aspect-ratio]");
+const advancedPanel = document.querySelector("#advanced-panel");
+const advancedFieldsContainer = document.querySelector("#advanced-fields");
+const advancedResetButton = document.querySelector("#advanced-reset");
 const podStatusBadge = document.querySelector("#pod-status-badge");
 const podTitle = document.querySelector("#pod-title");
 const podSubtitle = document.querySelector("#pod-subtitle");
@@ -608,6 +611,115 @@ async function pollEndpointStatus(endpointUrl, jobId, authToken) {
   throw new Error("Serverless job timed out while waiting for completion.");
 }
 
+function renderAdvancedFields(fields) {
+  if (!advancedFieldsContainer || !Array.isArray(fields) || !fields.length) {
+    if (advancedPanel) {
+      advancedPanel.hidden = true;
+    }
+    return;
+  }
+
+  advancedFieldsContainer.innerHTML = "";
+  const groups = new Map();
+  fields.forEach((field) => {
+    const groupName = field.group || "Workflow";
+    if (!groups.has(groupName)) {
+      groups.set(groupName, []);
+    }
+    groups.get(groupName).push(field);
+  });
+
+  groups.forEach((groupFields, groupName) => {
+    const groupEl = document.createElement("div");
+    groupEl.className = "advanced-group";
+
+    const groupTitle = document.createElement("p");
+    groupTitle.className = "advanced-group-title";
+    groupTitle.textContent = groupName;
+    groupEl.appendChild(groupTitle);
+
+    const grid = document.createElement("div");
+    grid.className = "advanced-grid";
+
+    groupFields.forEach((field) => {
+      const label = document.createElement("label");
+      label.className = "field-group";
+
+      const labelText = document.createElement("span");
+      labelText.className = "field-label";
+      labelText.textContent = field.label || field.id;
+      label.appendChild(labelText);
+
+      let input;
+      if (field.type === "select") {
+        input = document.createElement("select");
+        input.className = "advanced-input";
+        (field.options || []).forEach((option) => {
+          const opt = document.createElement("option");
+          opt.value = option;
+          opt.textContent = option;
+          input.appendChild(opt);
+        });
+        input.value = String(field.value);
+      } else if (field.type === "textarea") {
+        input = document.createElement("textarea");
+        input.className = "advanced-input advanced-textarea";
+        input.rows = 2;
+        input.value = field.value ?? "";
+      } else {
+        input = document.createElement("input");
+        input.className = "advanced-input";
+        input.type = field.type === "number" ? "number" : "text";
+        if (field.min !== undefined) input.min = String(field.min);
+        if (field.max !== undefined) input.max = String(field.max);
+        if (field.step !== undefined) input.step = String(field.step);
+        input.value = String(field.value ?? "");
+      }
+
+      input.dataset.fieldId = field.id;
+      input.dataset.defaultValue = String(field.value ?? "");
+      label.appendChild(input);
+
+      if (field.help) {
+        const help = document.createElement("span");
+        help.className = "advanced-help";
+        help.textContent = field.help;
+        label.appendChild(help);
+      }
+
+      grid.appendChild(label);
+    });
+
+    groupEl.appendChild(grid);
+    advancedFieldsContainer.appendChild(groupEl);
+  });
+}
+
+function collectOverrides() {
+  const overrides = {};
+  if (!advancedFieldsContainer) {
+    return overrides;
+  }
+  advancedFieldsContainer
+    .querySelectorAll("[data-field-id]")
+    .forEach((input) => {
+      overrides[input.dataset.fieldId] = input.value;
+    });
+  return overrides;
+}
+
+function resetAdvancedFields() {
+  if (!advancedFieldsContainer) {
+    return;
+  }
+  advancedFieldsContainer
+    .querySelectorAll("[data-field-id]")
+    .forEach((input) => {
+      input.value = input.dataset.defaultValue;
+    });
+  setFeedback("Advanced workflow settings reset to defaults.", "success");
+}
+
 async function initializeConfig() {
   const response = await fetch("api/config");
   if (!response.ok) {
@@ -643,6 +755,9 @@ async function initializeConfig() {
   secondsNumberField.value = String(config.seconds.default);
   secondsMinLabel.textContent = formatSecondsLabel(config.seconds.min);
   secondsMaxLabel.textContent = formatSecondsLabel(config.seconds.max);
+  if (config.advanced_fields) {
+    renderAdvancedFields(config.advanced_fields);
+  }
   updateSubmitModeUi();
   updateDurationSummary();
 }
@@ -676,6 +791,7 @@ async function buildPayload({
       image_name: state.file.name,
       image_data_url: imageDataUrl,
       optimize_prompt: optimizeField.checked,
+      overrides: collectOverrides(),
     }),
   });
 
@@ -879,6 +995,7 @@ podStartBtn?.addEventListener("click", () => triggerPodActionFromUi("start"));
 podStopBtn?.addEventListener("click", () => triggerPodActionFromUi("stop"));
 podTerminateBtn?.addEventListener("click", () => triggerPodActionFromUi("terminate"));
 podRefreshBtn?.addEventListener("click", refreshPodStatus);
+advancedResetButton?.addEventListener("click", resetAdvancedFields);
 
 updatePromptCounter();
 updateAspectButtons();

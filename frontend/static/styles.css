@@ -614,6 +614,93 @@ input[type="range"]::-moz-range-thumb {
   gap: 16px;
 }
 
+.advanced-panel {
+  margin-top: 16px;
+}
+
+.advanced-summary {
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.advanced-summary .payload-label {
+  display: inline;
+  margin: 0;
+}
+
+.advanced-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.advanced-panel[open] .advanced-summary {
+  margin-bottom: 18px;
+}
+
+.advanced-fields {
+  display: grid;
+  gap: 22px;
+}
+
+.advanced-group-title {
+  margin: 0 0 10px;
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 14px;
+}
+
+.advanced-grid .field-group input,
+.advanced-grid .field-group select,
+.advanced-grid .field-group textarea,
+.advanced-input {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(2, 5, 12, 0.72);
+  color: var(--text);
+  outline: none;
+  font-family: inherit;
+}
+
+.advanced-input:focus {
+  border-color: var(--outline-strong);
+}
+
+.advanced-input option {
+  background: #0a1120;
+  color: var(--text);
+}
+
+.advanced-textarea {
+  resize: vertical;
+  min-height: 64px;
+}
+
+.advanced-help {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.advanced-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
 .field-group {
   display: grid;
   gap: 10px;

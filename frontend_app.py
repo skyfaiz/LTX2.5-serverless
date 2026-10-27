@@ -25,6 +25,7 @@ from ltx_payload_builder import (
     SECONDS_MIN,
     SECONDS_STEP,
     build_payload,
+    get_advanced_fields,
     seconds_to_frames,
 )
 from workflow_support import (
@@ -47,7 +48,7 @@ if _env_file.exists():
             _k, _v = _line.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
-DEFAULT_RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "7xb7ltktyjogxe").strip()
+DEFAULT_RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "fizt5mjsivvy3i").strip()
 DEFAULT_RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "").strip()
 RUNPOD_MCP_URL = os.environ.get("RUNPOD_MCP_URL", "https://mcp.runpod.io/").strip()
 LTX_POD_NAME = os.environ.get("LTX_POD_NAME", "ltx25-pod").strip()
@@ -113,6 +114,7 @@ class PayloadRequest(BaseModel):
     image_name: str = Field(..., min_length=1)
     image_data_url: str = Field(..., min_length=1)
     optimize_prompt: bool = True
+    overrides: dict[str, Any] = Field(default_factory=dict)
 
 
 class SubmitRequest(BaseModel):
@@ -772,6 +774,7 @@ async def config() -> dict[str, object]:
         "submission_mode": get_submission_mode(),
         "default_endpoint_url": default_endpoint_url,
         "has_server_auth": bool(DEFAULT_RUNPOD_API_KEY),
+        "advanced_fields": get_advanced_fields(),
     }
 
 
@@ -785,6 +788,7 @@ async def create_payload(request: PayloadRequest) -> dict[str, object]:
             image_name=request.image_name,
             image_data_url=request.image_data_url,
             optimize_prompt=request.optimize_prompt,
+            overrides=request.overrides,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
