@@ -151,27 +151,31 @@
                 <code>https://api.runpod.ai/v2/&lt;endpoint_id&gt;/runsync</code>
               </p>
             </div>
-            <div class="endpoint-grid">
-              <label class="field-group">
-                <span class="field-label">Endpoint URL</span>
-                <input
-                  id="endpoint-url"
-                  name="endpoint-url"
-                  type="url"
-                  placeholder="https://api.runpod.ai/v2/your-endpoint-id/runsync"
-                />
-              </label>
-              <label class="field-group">
-                <span class="field-label">Bearer Token</span>
-                <input
-                  id="auth-token"
-                  name="auth-token"
-                  type="password"
-                  placeholder="RunPod API key"
-                  autocomplete="off"
-                />
-              </label>
-            </div>
+            <p id="endpoint-status-line" class="endpoint-status" hidden></p>
+            <details id="endpoint-overrides" open>
+              <summary class="endpoint-overrides-summary">Endpoint &amp; token settings</summary>
+              <div class="endpoint-grid">
+                <label class="field-group">
+                  <span class="field-label">Endpoint URL</span>
+                  <input
+                    id="endpoint-url"
+                    name="endpoint-url"
+                    type="url"
+                    placeholder="https://api.runpod.ai/v2/your-endpoint-id/runsync"
+                  />
+                </label>
+                <label class="field-group">
+                  <span class="field-label">Bearer Token</span>
+                  <input
+                    id="auth-token"
+                    name="auth-token"
+                    type="password"
+                    placeholder="RunPod API key"
+                    autocomplete="off"
+                  />
+                </label>
+              </div>
+            </details>
           </section>
 
           <div class="actions">

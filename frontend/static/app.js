@@ -7,6 +7,7 @@ const state = {
   payloadJson: "",
   runMode: "worker",
   submissionMode: "endpoint",
+  serverConfigured: false,
 };
 
 const ratioDimensions = {
@@ -45,6 +46,8 @@ const submitButton = document.querySelector("#submit-button");
 const copyButton = document.querySelector("#copy-button");
 const downloadButton = document.querySelector("#download-button");
 const endpointPanel = document.querySelector("#endpoint-panel");
+const endpointStatusLine = document.querySelector("#endpoint-status-line");
+const endpointOverrides = document.querySelector("#endpoint-overrides");
 const endpointUrlField = document.querySelector("#endpoint-url");
 const authTokenField = document.querySelector("#auth-token");
 const submitModeTitle = document.querySelector("#submit-mode-title");
@@ -131,9 +134,19 @@ function updateSubmitModeUi() {
   generateButton.disabled = false;
   generateButton.type = "submit";
   helperCopy.hidden = false;
-  submitModeTitle.textContent = "Real endpoint";
-  submitModeCopy.innerHTML =
-    'Full POST URL, for example <code>https://api.runpod.ai/v2/&lt;endpoint_id&gt;/runsync</code>';
+  if (state.serverConfigured) {
+    endpointStatusLine.hidden = false;
+    endpointOverrides.open = false;
+    submitModeTitle.textContent = "Serverless endpoint";
+    submitModeCopy.textContent =
+      "Endpoint and API key are configured on the server. Expand the settings below only if you need to override them.";
+  } else {
+    endpointStatusLine.hidden = true;
+    endpointOverrides.open = true;
+    submitModeTitle.textContent = "Real endpoint";
+    submitModeCopy.innerHTML =
+      'Full POST URL, for example <code>https://api.runpod.ai/v2/&lt;endpoint_id&gt;/runsync</code>';
+  }
   submitButton.textContent = "Submit to Endpoint";
   submitButton.classList.remove("primary-action");
   submitButton.classList.add("secondary-hero-action");
@@ -436,8 +449,17 @@ async function initializeConfig() {
   if (config.default_endpoint_url && !endpointUrlField.value) {
     endpointUrlField.value = config.default_endpoint_url;
   }
+  state.serverConfigured = Boolean(
+    config.has_server_auth && config.default_endpoint_url
+  );
   if (config.has_server_auth) {
     authTokenField.placeholder = "Configured on server (optional override)";
+  }
+  if (state.serverConfigured) {
+    const endpointId = (config.default_endpoint_url.match(/\/v2\/([^/]+)\//) || [])[1] || "";
+    endpointStatusLine.textContent = endpointId
+      ? `Connected to RunPod serverless endpoint ${endpointId} — API key managed by the server.`
+      : "Endpoint and API key managed by the server.";
   }
   secondsField.min = String(config.seconds.min);
   secondsField.max = String(config.seconds.max);
