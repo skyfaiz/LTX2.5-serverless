@@ -247,9 +247,16 @@ function renderResponse(result) {
     responseOutput.hidden = true;
     responseOutput.textContent = "";
   } else {
-    responseStatus.hidden = true;
-    responseStatus.textContent = "";
-    renderResponseMedia(null);
+    const endpointOutput = normalizeEndpointOutput(result.response_json?.output);
+    renderResponseMedia(endpointOutput);
+    const epStatus = result.response_json?.status || "";
+    if (epStatus) {
+      responseStatus.textContent = `Job status: ${epStatus}`;
+      responseStatus.hidden = false;
+    } else {
+      responseStatus.hidden = true;
+      responseStatus.textContent = "";
+    }
     responseOutput.hidden = false;
     responseOutput.textContent = result.response_json
       ? JSON.stringify(result.response_json, null, 2)
@@ -257,6 +264,28 @@ function renderResponse(result) {
   }
 
   responsePanel.hidden = false;
+}
+
+function normalizeEndpointOutput(rawOutput) {
+  if (!rawOutput) return null;
+  const convertEntry = (entry, fallbackKind) => {
+    const mediaType = entry.media_type || (fallbackKind === "video" ? "video/mp4" : "image/png");
+    const url =
+      entry.url ||
+      (entry.type === "base64" && entry.data
+        ? `data:${mediaType};base64,${entry.data}`
+        : entry.data);
+    return {
+      filename: entry.filename || (fallbackKind === "video" ? "ltx25_output.mp4" : "output.png"),
+      media_type: mediaType,
+      url,
+      download_url: url,
+    };
+  };
+  return {
+    videos: (rawOutput.videos || []).map((v) => convertEntry(v, "video")),
+    images: (rawOutput.images || []).map((img) => convertEntry(img, "image")),
+  };
 }
 
 function renderPodStatus(responseJson) {
@@ -369,8 +398,33 @@ async function pollPodSubmitStatus(promptId, nodeUsed) {
   throw new Error("Local pod run timed out while waiting for ComfyUI history.");
 }
 
+async function pollEndpointStatus(endpointUrl, jobId, authToken) {
+  const deadline = Date.now() + POD_STATUS_POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await sleep(3000);
+    const params = new URLSearchParams({
+      endpoint_url: endpointUrl,
+      job_id: jobId,
+    });
+    if (authToken) {
+      params.set("auth_token", authToken);
+    }
+    const response = await fetch(`api/endpoint-status?${params.toString()}`);
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || "Failed to poll RunPod endpoint status.");
+    }
+    renderResponse(result);
+    const st = result.response_json?.status;
+    if (st === "COMPLETED" || st === "FAILED" || st === "CANCELLED" || st === "TIMED_OUT") {
+      return result;
+    }
+  }
+  throw new Error("Serverless job timed out while waiting for completion.");
+}
+
 async function initializeConfig() {
-  const response = await fetch("/api/config");
+  const response = await fetch("api/config");
   if (!response.ok) {
     throw new Error("Failed to load app configuration.");
   }
@@ -379,6 +433,12 @@ async function initializeConfig() {
   state.fps = config.fps;
   state.runMode = config.run_mode || "worker";
   state.submissionMode = config.submission_mode || "endpoint";
+  if (config.default_endpoint_url && !endpointUrlField.value) {
+    endpointUrlField.value = config.default_endpoint_url;
+  }
+  if (config.has_server_auth) {
+    authTokenField.placeholder = "Configured on server (optional override)";
+  }
   secondsField.min = String(config.seconds.min);
   secondsField.max = String(config.seconds.max);
   secondsField.step = String(config.seconds.step);
@@ -410,7 +470,7 @@ async function buildPayload({
   }
 
   const imageDataUrl = await readFileAsDataUrl(state.file);
-  const response = await fetch("/api/payload", {
+  const response = await fetch("api/payload", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -545,7 +605,7 @@ submitButton.addEventListener("click", async () => {
     }
 
     const response = await fetch(
-      state.submissionMode === "pod" ? "/api/pod-submit" : "/api/submit",
+      state.submissionMode === "pod" ? "api/pod-submit" : "api/submit",
       {
         method: "POST",
         headers: {
@@ -586,6 +646,22 @@ submitButton.addEventListener("click", async () => {
           ? "Local pod run finished successfully."
           : `Local pod run returned HTTP ${completedResult.status_code}.`,
         completedResult.ok ? "success" : "error"
+      );
+      return;
+    }
+
+    const rpJobId = result.response_json?.id;
+    const rpStatus = result.response_json?.status;
+    if (rpJobId && (rpStatus === "IN_QUEUE" || rpStatus === "IN_PROGRESS")) {
+      setFeedback(`Job ${rpJobId} queued on RunPod Serverless. Polling status...`, "success");
+      submitButton.textContent = "Polling RunPod...";
+      const finalResult = await pollEndpointStatus(endpointUrl, rpJobId, authTokenField.value);
+      const finalStatus = finalResult.response_json?.status;
+      setFeedback(
+        finalStatus === "COMPLETED"
+          ? "LTX 2.5 video generation completed!"
+          : `Job finished with status: ${finalStatus}`,
+        finalStatus === "COMPLETED" ? "success" : "error"
       );
       return;
     }

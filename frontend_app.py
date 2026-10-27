@@ -37,6 +37,18 @@ from workflow_support import (
 
 ROOT_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = ROOT_DIR / "frontend"
+
+# Load local .env if present (without requiring python-dotenv)
+_env_file = ROOT_DIR / ".env"
+if _env_file.exists():
+    for _line in _env_file.read_text(encoding="utf-8").splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+
+DEFAULT_RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "7xb7ltktyjogxe").strip()
+DEFAULT_RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "").strip()
 COMFY_NODES = os.environ.get("COMFY_NODES", "127.0.0.1:8188").split(",")
 COMFY_INPUT_DIR = os.environ.get("COMFY_INPUT_DIR", "/comfyui/input")
 LOCAL_COMFY_NODE = os.environ.get("LOCAL_COMFY_NODE", "127.0.0.1:8188").strip()
@@ -325,6 +337,11 @@ async def health() -> dict[str, str]:
 
 @app.get("/api/config")
 async def config() -> dict[str, object]:
+    default_endpoint_url = (
+        f"https://api.runpod.ai/v2/{DEFAULT_RUNPOD_ENDPOINT_ID}/run"
+        if DEFAULT_RUNPOD_ENDPOINT_ID
+        else ""
+    )
     return {
         "fps": FPS,
         "seconds": {
@@ -337,6 +354,8 @@ async def config() -> dict[str, object]:
         "text_to_video_enabled": False,
         "run_mode": get_run_mode(),
         "submission_mode": get_submission_mode(),
+        "default_endpoint_url": default_endpoint_url,
+        "has_server_auth": bool(DEFAULT_RUNPOD_API_KEY),
     }
 
 
@@ -374,7 +393,7 @@ async def create_payload(request: PayloadRequest) -> dict[str, object]:
 async def submit_payload(request: SubmitRequest) -> dict[str, object]:
     endpoint_url = get_submit_url(request.endpoint_url)
     headers = {"Content-Type": "application/json"}
-    auth_token = request.auth_token.strip()
+    auth_token = request.auth_token.strip() or DEFAULT_RUNPOD_API_KEY
     if auth_token:
         headers["Authorization"] = f"Bearer {auth_token}"
 
@@ -410,6 +429,46 @@ async def submit_payload(request: SubmitRequest) -> dict[str, object]:
         raise HTTPException(status_code=504, detail="Submit request timed out.") from exc
     except aiohttp.ClientError as exc:
         raise HTTPException(status_code=502, detail=f"Submit request failed: {exc}") from exc
+
+
+@app.get("/api/endpoint-status")
+async def get_endpoint_status(
+    endpoint_url: str,
+    job_id: str,
+    auth_token: str = "",
+) -> dict[str, object]:
+    submit_url = get_submit_url(endpoint_url.strip())
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", job_id):
+        raise HTTPException(status_code=400, detail="Invalid job ID.")
+
+    base_url = re.sub(r"/(run|runsync)$", "", submit_url)
+    status_url = f"{base_url}/status/{job_id}"
+    headers = {"Content-Type": "application/json"}
+    token = auth_token.strip() or DEFAULT_RUNPOD_API_KEY
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    timeout = aiohttp.ClientTimeout(total=30)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(status_url, headers=headers) as response:
+                raw_body = await response.text()
+                content_type = response.headers.get("Content-Type", "")
+                response_json: Any | None = None
+                try:
+                    response_json = json.loads(raw_body)
+                except json.JSONDecodeError:
+                    response_json = None
+                return {
+                    "ok": 200 <= response.status < 300,
+                    "status_code": response.status,
+                    "content_type": content_type or "application/json",
+                    "endpoint_url": status_url,
+                    "response_json": response_json,
+                    "response_text": None if response_json is not None else raw_body,
+                }
+    except aiohttp.ClientError as exc:
+        raise HTTPException(status_code=502, detail=f"Status request failed: {exc}") from exc
 
 
 @app.post("/api/pod-submit")
