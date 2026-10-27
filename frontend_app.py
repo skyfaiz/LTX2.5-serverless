@@ -704,6 +704,9 @@ def pod_idle_payload(ready: bool) -> dict[str, Any]:
         "remaining_seconds": decision["remaining_seconds"],
         "auto_terminated_at": POD_ACTIVITY["auto_terminated_at"],
         "auto_terminated_pod_id": POD_ACTIVITY["auto_terminated_pod_id"],
+        "watchdog_running": bool(
+            _POD_WATCHDOG_TASK is not None and not _POD_WATCHDOG_TASK.done()
+        ),
     }
 
 
