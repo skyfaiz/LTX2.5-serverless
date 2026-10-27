@@ -48,14 +48,43 @@ if _env_file.exists():
             _k, _v = _line.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
+def _load_runpod_key_from_mcp_configs() -> str:
+    candidates = [
+        ROOT_DIR / ".devin" / "mcp_config.local.json",
+        ROOT_DIR / ".devin" / "mcp_config.json",
+        ROOT_DIR.parent / ".devin" / "mcp_config.local.json",
+        ROOT_DIR.parent / ".devin" / "mcp_config.json",
+        Path.home() / ".config" / "devin" / "mcp_config.local.json",
+        Path.home() / ".config" / "devin" / "mcp_config.json",
+    ]
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        server = (data.get("mcpServers") or {}).get("runpod") or {}
+        env_key = ((server.get("env") or {}).get("RUNPOD_API_KEY") or "").strip()
+        header = ((server.get("headers") or {}).get("Authorization") or "").strip()
+        if env_key:
+            return env_key
+        if header.lower().startswith("bearer "):
+            return header[7:].strip()
+        if header:
+            return header
+    return ""
+
+
 DEFAULT_RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "fizt5mjsivvy3i").strip()
-DEFAULT_RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "").strip()
+DEFAULT_RUNPOD_API_KEY = (
+    os.environ.get("RUNPOD_API_KEY", "").strip()
+    or _load_runpod_key_from_mcp_configs()
+)
 RUNPOD_MCP_URL = os.environ.get("RUNPOD_MCP_URL", "https://mcp.runpod.io/").strip()
 LTX_POD_NAME = os.environ.get("LTX_POD_NAME", "ltx25-pod").strip()
 LTX_POD_IMAGE = os.environ.get("LTX_POD_IMAGE", "notrius/ltx-2.5-serverless:cu130").strip()
 LTX_VOLUME_ID = os.environ.get("LTX_VOLUME_ID", "vkqbtcijow").strip()
 LTX_VOLUME_NAME = os.environ.get("LTX_VOLUME_NAME", "ltx25-models").strip()
-LTX_VOLUME_SIZE_GB = int(os.environ.get("LTX_VOLUME_SIZE_GB", "150"))
+LTX_VOLUME_SIZE_GB = int(os.environ.get("LTX_VOLUME_SIZE_GB", "165"))
 LTX_DATA_CENTER_ID = os.environ.get("LTX_DATA_CENTER_ID", "EUR-IS-2").strip()
 LTX_MOUNT_PATH = os.environ.get("LTX_MOUNT_PATH", "/workspace").strip()
 LTX_HF_SECRET_REF = os.environ.get(
