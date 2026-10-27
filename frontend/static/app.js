@@ -5,9 +5,11 @@ const state = {
   filePreviewUrl: "",
   payload: null,
   payloadJson: "",
-  runMode: "worker",
-  submissionMode: "endpoint",
+  runMode: "pod",
+  submissionMode: "pod",
   serverConfigured: false,
+  pod: null,
+  podActionBusy: false,
 };
 
 const ratioDimensions = {
@@ -59,8 +61,21 @@ const responseStatus = document.querySelector("#response-status");
 const responseMedia = document.querySelector("#response-media");
 const responseOutput = document.querySelector("#response-output");
 const aspectButtons = document.querySelectorAll("[data-aspect-ratio]");
+const podStatusBadge = document.querySelector("#pod-status-badge");
+const podTitle = document.querySelector("#pod-title");
+const podSubtitle = document.querySelector("#pod-subtitle");
+const podGpuSelect = document.querySelector("#pod-gpu-select");
+const podDeployBtn = document.querySelector("#pod-deploy-btn");
+const podStartBtn = document.querySelector("#pod-start-btn");
+const podStopBtn = document.querySelector("#pod-stop-btn");
+const podTerminateBtn = document.querySelector("#pod-terminate-btn");
+const podComfyLink = document.querySelector("#pod-comfy-link");
+const podRefreshBtn = document.querySelector("#pod-refresh-btn");
+const podLogsDetails = document.querySelector("#pod-logs-details");
+const podLogsOutput = document.querySelector("#pod-logs-output");
 const POD_STATUS_POLL_INTERVAL_MS = 2000;
 const POD_STATUS_POLL_TIMEOUT_MS = 15 * 60 * 1000;
+let podLifecyclePollTimer = null;
 
 function secondsToFrames(seconds) {
   return Math.round(seconds * state.fps) + 1;
@@ -386,17 +401,19 @@ function renderResponseMedia(output) {
 
 async function pollPodSubmitStatus(promptId, nodeUsed) {
   const deadline = Date.now() + POD_STATUS_POLL_TIMEOUT_MS;
-  const statusUrl = new URL(`/api/pod-submit/${encodeURIComponent(promptId)}`, window.location.origin);
+  const params = new URLSearchParams();
   if (nodeUsed) {
-    statusUrl.searchParams.set("node", nodeUsed);
+    params.set("node", nodeUsed);
   }
+  const qs = params.toString();
+  const statusUrl = `api/pod-submit/${encodeURIComponent(promptId)}${qs ? `?${qs}` : ""}`;
 
   while (Date.now() < deadline) {
     const response = await fetch(statusUrl);
     const result = await response.json();
 
     if (!response.ok) {
-      throw new Error(result.detail || "Failed to poll local pod status.");
+      throw new Error(result.detail || "Failed to poll pod status.");
     }
 
     renderResponse(result);
@@ -408,7 +425,162 @@ async function pollPodSubmitStatus(promptId, nodeUsed) {
     await sleep(POD_STATUS_POLL_INTERVAL_MS);
   }
 
-  throw new Error("Local pod run timed out while waiting for ComfyUI history.");
+  throw new Error("Pod run timed out while waiting for ComfyUI history.");
+}
+
+function renderPodControlState(data) {
+  const pod = data?.pod || null;
+  state.pod = pod;
+  const vol = data?.default_volume || {};
+  const logs = data?.logs || [];
+
+  if (!pod) {
+    podStatusBadge.textContent = "Not Deployed ($0/hr compute)";
+    podStatusBadge.className = "pod-status-badge pod-status-idle";
+    podTitle.textContent = "No LTX 2.5 Pod Active";
+    podSubtitle.innerHTML = `Persistent Volume ready: <code>${vol.name || "ltx25-models"} (${vol.id || "vkqbtcijow"} · ${vol.size_gb || 150} GB · ${vol.data_center_id || "EUR-IS-2"} → ${vol.mount_path || "/workspace"})</code>`;
+    podGpuSelect.hidden = false;
+    podDeployBtn.hidden = false;
+    podDeployBtn.disabled = state.podActionBusy;
+    podStartBtn.hidden = true;
+    podStopBtn.hidden = true;
+    podTerminateBtn.hidden = true;
+    podComfyLink.hidden = true;
+    podLogsDetails.hidden = true;
+    return;
+  }
+
+  const priceStr = typeof pod.cost_per_hr === "number" ? `$${pod.cost_per_hr.toFixed(2)}/hr` : "";
+  podTitle.textContent = `${pod.name} · ${pod.gpu_name} (${pod.id})`;
+  podSubtitle.innerHTML = `Data Center: <code>${pod.data_center_id}</code> · Volume: <code>${pod.volume_id} → ${pod.mount_path}</code>`;
+
+  podGpuSelect.hidden = true;
+  podDeployBtn.hidden = true;
+
+  if (pod.phase === "READY") {
+    podStatusBadge.textContent = `Ready · ${priceStr}`;
+    podStatusBadge.className = "pod-status-badge pod-status-ready";
+    podStartBtn.hidden = true;
+    podStopBtn.hidden = false;
+    podTerminateBtn.hidden = false;
+    podComfyLink.hidden = false;
+    podComfyLink.href = pod.comfy_url;
+  } else if (pod.phase === "STOPPED") {
+    podStatusBadge.textContent = "Stopped (GPU Released)";
+    podStatusBadge.className = "pod-status-badge pod-status-stopped";
+    podStartBtn.hidden = false;
+    podStopBtn.hidden = true;
+    podTerminateBtn.hidden = false;
+    podComfyLink.hidden = true;
+  } else {
+    podStatusBadge.textContent = `Bootstrapping Models & ComfyUI... (${priceStr})`;
+    podStatusBadge.className = "pod-status-badge pod-status-booting";
+    podStartBtn.hidden = true;
+    podStopBtn.hidden = false;
+    podTerminateBtn.hidden = false;
+    podComfyLink.hidden = true;
+  }
+
+  podStartBtn.disabled = state.podActionBusy;
+  podStopBtn.disabled = state.podActionBusy;
+  podTerminateBtn.disabled = state.podActionBusy;
+
+  if (logs.length > 0) {
+    podLogsDetails.hidden = false;
+    if (pod.phase === "BOOTSTRAPPING") {
+      podLogsDetails.open = true;
+    }
+    podLogsOutput.textContent = logs.join("\n");
+  } else {
+    podLogsDetails.hidden = pod.phase !== "BOOTSTRAPPING";
+  }
+}
+
+async function refreshPodStatus() {
+  try {
+    const resp = await fetch("api/pod/status");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    renderPodControlState(data);
+    const nextDelay = data?.pod && data.pod.phase === "BOOTSTRAPPING" ? 5000 : 12000;
+    window.clearTimeout(podLifecyclePollTimer);
+    podLifecyclePollTimer = window.setTimeout(refreshPodStatus, nextDelay);
+  } catch (_err) {
+    window.clearTimeout(podLifecyclePollTimer);
+    podLifecyclePollTimer = window.setTimeout(refreshPodStatus, 15000);
+  }
+}
+
+async function deployPodFromUi() {
+  state.podActionBusy = true;
+  podDeployBtn.disabled = true;
+  podDeployBtn.textContent = "Deploying...";
+  setFeedback("Provisioning LTX 2.5 GPU Pod with persistent volume attached...", "success");
+  try {
+    const resp = await fetch("api/pod/deploy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gpu_id: podGpuSelect.value }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to deploy Pod.");
+    }
+    renderPodControlState(data);
+    setFeedback("Pod deployed! Waiting for ComfyUI and LTX 2.5 models to finish loading...", "success");
+    window.clearTimeout(podLifecyclePollTimer);
+    podLifecyclePollTimer = window.setTimeout(refreshPodStatus, 4000);
+  } catch (err) {
+    setFeedback(err.message, "error");
+  } finally {
+    state.podActionBusy = false;
+    podDeployBtn.disabled = false;
+    podDeployBtn.textContent = "Deploy Pod";
+  }
+}
+
+async function triggerPodActionFromUi(action) {
+  if (action === "terminate") {
+    const ok = window.confirm(
+      "Terminate the LTX 2.5 Pod? Compute billing stops immediately and all LTX models remain safely persisted on the network volume (vkqbtcijow)."
+    );
+    if (!ok) return;
+  }
+  state.podActionBusy = true;
+  podStartBtn.disabled = true;
+  podStopBtn.disabled = true;
+  podTerminateBtn.disabled = true;
+  setFeedback(`Executing Pod action: ${action}...`, "success");
+  try {
+    const resp = await fetch("api/pod/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action,
+        pod_id: state.pod?.id || "",
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data.detail || `Pod ${action} failed.`);
+    }
+    renderPodControlState(data);
+    setFeedback(
+      action === "terminate"
+        ? "Pod terminated. Persistent models remain saved on network volume vkqbtcijow."
+        : `Pod ${action} succeeded.`,
+      "success"
+    );
+    window.clearTimeout(podLifecyclePollTimer);
+    podLifecyclePollTimer = window.setTimeout(refreshPodStatus, 4000);
+  } catch (err) {
+    setFeedback(err.message, "error");
+  } finally {
+    state.podActionBusy = false;
+    podStartBtn.disabled = false;
+    podStopBtn.disabled = false;
+    podTerminateBtn.disabled = false;
+  }
 }
 
 async function pollEndpointStatus(endpointUrl, jobId, authToken) {
@@ -702,9 +874,16 @@ submitButton.addEventListener("click", async () => {
   }
 });
 
+podDeployBtn?.addEventListener("click", deployPodFromUi);
+podStartBtn?.addEventListener("click", () => triggerPodActionFromUi("start"));
+podStopBtn?.addEventListener("click", () => triggerPodActionFromUi("stop"));
+podTerminateBtn?.addEventListener("click", () => triggerPodActionFromUi("terminate"));
+podRefreshBtn?.addEventListener("click", refreshPodStatus);
+
 updatePromptCounter();
 updateAspectButtons();
 setFile(null);
 initializeConfig().catch((error) => {
   setFeedback(error.message, "error");
 });
+refreshPodStatus();

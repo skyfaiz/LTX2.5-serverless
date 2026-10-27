@@ -835,3 +835,168 @@ input[type="range"]::-moz-range-thumb {
     flex: 1;
   }
 }
+
+.pod-control-panel {
+  padding: 22px 26px;
+  display: grid;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.pod-control-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.pod-control-title-wrap {
+  display: grid;
+  gap: 6px;
+}
+
+.pod-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pod-control-title-wrap h2 {
+  margin: 0;
+  font-family: "Manrope", system-ui, sans-serif;
+  font-size: 1.35rem;
+}
+
+.pod-subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.pod-subtitle code {
+  color: var(--text);
+  font-family: inherit;
+}
+
+.pod-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 11px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.pod-status-idle {
+  background: rgba(148, 163, 184, 0.14);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: #cbd5e1;
+}
+
+.pod-status-ready {
+  background: rgba(58, 199, 126, 0.14);
+  border: 1px solid rgba(58, 199, 126, 0.36);
+  color: #63d9a4;
+}
+
+.pod-status-booting {
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.36);
+  color: #fbbf24;
+}
+
+.pod-status-stopped {
+  background: rgba(239, 68, 68, 0.14);
+  border: 1px solid rgba(239, 68, 68, 0.32);
+  color: #fca5a5;
+}
+
+.pod-actions-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pod-gpu-select {
+  min-height: 42px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(2, 5, 12, 0.78);
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 0.88rem;
+  outline: none;
+}
+
+.pod-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 8px 16px;
+  border-radius: 12px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-decoration: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.pod-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.pod-btn-primary {
+  background: linear-gradient(135deg, #c4b5fd, #818cf8);
+  color: #090d16;
+}
+
+.pod-btn-warning {
+  background: rgba(245, 158, 11, 0.16);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #fbbf24;
+}
+
+.pod-btn-danger {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+}
+
+.pod-btn-secondary {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: var(--text);
+}
+
+.pod-logs-details {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 12px;
+}
+
+.pod-logs-summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.pod-logs-output {
+  margin: 10px 0 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(2, 5, 12, 0.82);
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}

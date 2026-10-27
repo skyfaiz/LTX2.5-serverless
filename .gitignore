@@ -43,3 +43,5 @@ Thumbs.db
 # Local planning docs
 docs/planning/
 docs/planning/004_refactor_plan.local.md
+outputs/
+.devin/*.local.json

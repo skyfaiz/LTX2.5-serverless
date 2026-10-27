@@ -49,6 +49,40 @@ if _env_file.exists():
 
 DEFAULT_RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID", "7xb7ltktyjogxe").strip()
 DEFAULT_RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "").strip()
+RUNPOD_MCP_URL = os.environ.get("RUNPOD_MCP_URL", "https://mcp.runpod.io/").strip()
+LTX_POD_NAME = os.environ.get("LTX_POD_NAME", "ltx25-pod").strip()
+LTX_POD_IMAGE = os.environ.get("LTX_POD_IMAGE", "notrius/ltx-2.5-serverless:cu130").strip()
+LTX_VOLUME_ID = os.environ.get("LTX_VOLUME_ID", "vkqbtcijow").strip()
+LTX_VOLUME_NAME = os.environ.get("LTX_VOLUME_NAME", "ltx25-models").strip()
+LTX_VOLUME_SIZE_GB = int(os.environ.get("LTX_VOLUME_SIZE_GB", "150"))
+LTX_DATA_CENTER_ID = os.environ.get("LTX_DATA_CENTER_ID", "EUR-IS-2").strip()
+LTX_MOUNT_PATH = os.environ.get("LTX_MOUNT_PATH", "/workspace").strip()
+LTX_HF_SECRET_REF = os.environ.get(
+    "LTX_HF_SECRET_REF", "{{ RUNPOD_SECRET_hf_access_token }}"
+).strip()
+CACHED_OUTPUTS_DIR = ROOT_DIR / "outputs"
+CACHED_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+
+LTX_GPU_OPTIONS = [
+    {
+        "id": "NVIDIA L40S",
+        "label": "NVIDIA L40S · 48 GB VRAM ($1.09/hr)",
+        "vram_gb": 48,
+        "price_hr": 1.09,
+    },
+    {
+        "id": "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 2g.48gb",
+        "label": "RTX PRO 6000 MIG · 48 GB VRAM ($1.29/hr)",
+        "vram_gb": 48,
+        "price_hr": 1.29,
+    },
+    {
+        "id": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        "label": "RTX PRO 6000 Blackwell · 96 GB VRAM ($2.49/hr)",
+        "vram_gb": 96,
+        "price_hr": 2.49,
+    },
+]
 COMFY_NODES = os.environ.get("COMFY_NODES", "127.0.0.1:8188").split(",")
 COMFY_INPUT_DIR = os.environ.get("COMFY_INPUT_DIR", "/comfyui/input")
 LOCAL_COMFY_NODE = os.environ.get("LOCAL_COMFY_NODE", "127.0.0.1:8188").strip()
@@ -117,7 +151,11 @@ def get_run_mode() -> str:
         return run_mode
     if os.environ.get("SERVE_API_LOCALLY", "").strip().lower() == "true":
         return "local-api"
-    return "worker"
+    return "pod"
+
+
+def is_local_comfy_environment() -> bool:
+    return Path(COMFY_INPUT_DIR).exists()
 
 
 def get_submission_mode() -> str:
@@ -286,13 +324,348 @@ def build_pod_output_payload(history_entry: dict[str, Any]) -> dict[str, list[di
             "filename": entry["filename"],
             "subfolder": entry.get("subfolder", ""),
             "media_type": media_type,
-            "url": f"/api/comfy-output?{query}",
-            "download_url": f"/api/comfy-output?{download_query}",
+            "url": f"api/comfy-output?{query}",
+            "download_url": f"api/comfy-output?{download_query}",
         }
         collection = "videos" if media_type.startswith("video/") else "images"
         output[collection].append(payload)
 
     return {key: value for key, value in output.items() if value}
+
+
+class PodDeployRequest(BaseModel):
+    gpu_id: str = "NVIDIA L40S"
+    volume_id: str = ""
+    data_center_id: str = ""
+
+
+class PodLifecycleActionRequest(BaseModel):
+    action: str = Field(..., pattern="^(start|stop|restart|terminate)$")
+    pod_id: str = ""
+
+
+async def call_runpod_mcp(
+    session: aiohttp.ClientSession,
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not DEFAULT_RUNPOD_API_KEY:
+        raise HTTPException(
+            status_code=500, detail="RUNPOD_API_KEY is not configured on the server."
+        )
+    headers = {
+        "Authorization": f"Bearer {DEFAULT_RUNPOD_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments or {},
+        },
+    }
+    async with session.post(RUNPOD_MCP_URL, headers=headers, json=body) as resp:
+        raw_text = await resp.text()
+        if resp.status >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"RunPod MCP error ({resp.status}): {raw_text[:300]}",
+            )
+
+    rpc_payload: dict[str, Any] | None = None
+    for line in raw_text.splitlines():
+        line_str = line.strip()
+        if line_str.startswith("data:"):
+            candidate = line_str[5:].strip()
+            if candidate:
+                try:
+                    rpc_payload = json.loads(candidate)
+                    break
+                except json.JSONDecodeError:
+                    continue
+    if rpc_payload is None:
+        try:
+            rpc_payload = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Invalid RunPod MCP response: {raw_text[:200]}",
+            ) from exc
+
+    result = (rpc_payload or {}).get("result") or {}
+    is_error = bool(result.get("isError"))
+    content_items = result.get("content") or []
+    text_content = ""
+    for item in content_items:
+        if isinstance(item, dict) and item.get("type") == "text":
+            text_content = item.get("text", "")
+            break
+
+    if is_error:
+        raise HTTPException(status_code=502, detail=text_content or "RunPod MCP tool error.")
+
+    if not text_content:
+        return {}
+    try:
+        return json.loads(text_content)
+    except json.JSONDecodeError:
+        return {"raw": text_content}
+
+
+async def find_ltx_pod(session: aiohttp.ClientSession) -> dict[str, Any] | None:
+    listed = await call_runpod_mcp(session, "list-pods", {})
+    pods = listed.get("pods") or []
+    for pod in pods:
+        name = (pod.get("name") or "").strip()
+        image = (pod.get("image") or "").strip()
+        if name == LTX_POD_NAME or image.startswith("notrius/ltx-2.5-serverless"):
+            pod_id = pod.get("id")
+            if pod_id:
+                try:
+                    return await call_runpod_mcp(session, "get-pod", {"id": pod_id})
+                except Exception:
+                    return pod
+    return None
+
+
+async def check_remote_pod_ready(
+    session: aiohttp.ClientSession, pod_id: str
+) -> bool:
+    health_url = f"https://{pod_id}-7777.proxy.runpod.net/health"
+    try:
+        async with session.get(
+            health_url, timeout=aiohttp.ClientTimeout(total=3)
+        ) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("status") == "ok"
+    except Exception:
+        return False
+    return False
+
+
+async def fetch_pod_boot_logs(
+    session: aiohttp.ClientSession, pod_id: str
+) -> list[str]:
+    try:
+        log_data = await call_runpod_mcp(
+            session,
+            "stream-pod-logs",
+            {"podId": pod_id, "source": "both", "tail": 40, "maxWaitMs": 800},
+        )
+        items = log_data.get("items") or []
+        cleaned: list[str] = []
+        for item in items:
+            line = (item.get("line") or "").strip()
+            if not line:
+                continue
+            if re.match(r"^[0-9a-f]{12}\s+(Extracting|Downloading|Waiting|Verifying|Pull complete)", line):
+                if cleaned and cleaned[-1].startswith("Docker image pull:"):
+                    cleaned[-1] = f"Docker image pull: {line}"
+                else:
+                    cleaned.append(f"Docker image pull: {line}")
+                continue
+            if not cleaned or cleaned[-1] != line:
+                cleaned.append(line)
+        return cleaned[-15:]
+    except Exception:
+        return []
+
+
+def format_pod_status_payload(
+    pod: dict[str, Any] | None,
+    ready: bool,
+    logs: list[str],
+) -> dict[str, Any]:
+    default_vol = {
+        "id": LTX_VOLUME_ID,
+        "name": LTX_VOLUME_NAME,
+        "size_gb": LTX_VOLUME_SIZE_GB,
+        "data_center_id": LTX_DATA_CENTER_ID,
+        "mount_path": LTX_MOUNT_PATH,
+    }
+    if not pod:
+        return {
+            "exists": False,
+            "pod": None,
+            "logs": [],
+            "default_volume": default_vol,
+            "gpu_options": LTX_GPU_OPTIONS,
+        }
+
+    pod_id = pod.get("id", "")
+    status = pod.get("status", "UNKNOWN")
+    if status == "RUNNING" and ready:
+        phase = "READY"
+    elif status == "RUNNING":
+        phase = "BOOTSTRAPPING"
+    elif status == "EXITED":
+        phase = "STOPPED"
+    else:
+        phase = status
+
+    net_mounts = ((pod.get("mounts") or {}).get("network")) or []
+    vol_id = net_mounts[0].get("volumeId") if net_mounts else LTX_VOLUME_ID
+    mount_path = net_mounts[0].get("path") if net_mounts else LTX_MOUNT_PATH
+    gpu_info = pod.get("gpu") or {}
+
+    return {
+        "exists": True,
+        "pod": {
+            "id": pod_id,
+            "name": pod.get("name", LTX_POD_NAME),
+            "status": status,
+            "ready": ready,
+            "phase": phase,
+            "cost_per_hr": pod.get("cost"),
+            "gpu_name": gpu_info.get("id", "GPU"),
+            "cuda_version": pod.get("cudaVersion"),
+            "data_center_id": pod.get("dataCenterId", LTX_DATA_CENTER_ID),
+            "volume_id": vol_id,
+            "mount_path": mount_path,
+            "actions": pod.get("actions") or [],
+            "comfy_url": f"https://{pod_id}-8188.proxy.runpod.net",
+            "app_url": f"https://{pod_id}-7777.proxy.runpod.net",
+            "started_at": pod.get("startedAt"),
+        },
+        "logs": logs,
+        "default_volume": default_vol,
+        "gpu_options": LTX_GPU_OPTIONS,
+    }
+
+
+@app.get("/api/pod/status")
+async def get_pod_status_endpoint() -> dict[str, Any]:
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        pod = await find_ltx_pod(session)
+        if not pod:
+            return format_pod_status_payload(None, False, [])
+        pod_id = pod.get("id", "")
+        status = pod.get("status", "")
+        ready = False
+        logs: list[str] = []
+        if status == "RUNNING" and pod_id:
+            ready, logs = await asyncio.gather(
+                check_remote_pod_ready(session, pod_id),
+                fetch_pod_boot_logs(session, pod_id),
+            )
+        return format_pod_status_payload(pod, ready, logs)
+
+
+@app.post("/api/pod/deploy")
+async def deploy_pod_endpoint(request: PodDeployRequest) -> dict[str, Any]:
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        existing = await find_ltx_pod(session)
+        if existing:
+            status = existing.get("status", "")
+            pod_id = existing.get("id", "")
+            if status == "EXITED" and pod_id:
+                updated = await call_runpod_mcp(
+                    session,
+                    "pod-action",
+                    {"id": pod_id, "body": {"action": "start"}},
+                )
+                return format_pod_status_payload(updated or existing, False, [])
+            ready = (
+                await check_remote_pod_ready(session, pod_id)
+                if status == "RUNNING" and pod_id
+                else False
+            )
+            logs = (
+                await fetch_pod_boot_logs(session, pod_id)
+                if status == "RUNNING" and pod_id
+                else []
+            )
+            return format_pod_status_payload(existing, ready, logs)
+
+        volume_id = request.volume_id.strip() or LTX_VOLUME_ID
+        dc_id = request.data_center_id.strip() or LTX_DATA_CENTER_ID
+        preferred_gpu = request.gpu_id.strip() or LTX_GPU_OPTIONS[0]["id"]
+        candidate_gpus = [preferred_gpu] + [
+            g["id"] for g in LTX_GPU_OPTIONS if g["id"] != preferred_gpu
+        ]
+
+        last_error = "No 48GB+ GPU stock available in data center."
+        for gpu_id in candidate_gpus:
+            create_body = {
+                "name": LTX_POD_NAME,
+                "image": LTX_POD_IMAGE,
+                "cloud": "SECURE",
+                "dataCenterIds": [dc_id],
+                "disk": 60,
+                "ports": ["7777/http", "8188/http"],
+                "mounts": {
+                    "network": [
+                        {
+                            "volumeId": volume_id,
+                            "path": LTX_MOUNT_PATH,
+                        }
+                    ]
+                },
+                "gpu": {
+                    "id": gpu_id,
+                    "count": 1,
+                    "minCudaVersion": "13.0",
+                },
+                "env": {
+                    "RUN_MODE": "pod",
+                    "PERSIST_WORKSPACE": "true",
+                    "LTX25_PRELOAD_VARIANT": "distilled-int8",
+                    "LTX25_PRELOAD_PROMPT_ENHANCER": "true",
+                    "COMFY_LOG_LEVEL": "INFO",
+                    "COMFY_MODEL_DISCOVERY_TIMEOUT_SECONDS": "300",
+                    "HUGGINGFACE_ACCESS_TOKEN": LTX_HF_SECRET_REF,
+                },
+            }
+            try:
+                created = await call_runpod_mcp(
+                    session, "create-pod", {"body": create_body}
+                )
+                if created and created.get("id"):
+                    verified = await call_runpod_mcp(
+                        session, "get-pod", {"id": created["id"]}
+                    )
+                    return format_pod_status_payload(verified or created, False, [])
+            except HTTPException as exc:
+                last_error = exc.detail
+                continue
+
+        raise HTTPException(status_code=503, detail=f"Pod deployment failed: {last_error}")
+
+
+@app.post("/api/pod/action")
+async def pod_action_endpoint(request: PodLifecycleActionRequest) -> dict[str, Any]:
+    timeout = aiohttp.ClientTimeout(total=25)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        pod_id = request.pod_id.strip()
+        if not pod_id:
+            existing = await find_ltx_pod(session)
+            if not existing or not existing.get("id"):
+                raise HTTPException(status_code=404, detail="No active LTX pod found.")
+            pod_id = existing["id"]
+
+        if request.action == "terminate":
+            await call_runpod_mcp(session, "delete-pod", {"id": pod_id})
+            return format_pod_status_payload(None, False, [])
+
+        updated = await call_runpod_mcp(
+            session,
+            "pod-action",
+            {"id": pod_id, "body": {"action": request.action}},
+        )
+        refreshed = await call_runpod_mcp(session, "get-pod", {"id": pod_id})
+        pod_obj = refreshed or updated
+        ready = False
+        logs: list[str] = []
+        if pod_obj and pod_obj.get("status") == "RUNNING":
+            ready = await check_remote_pod_ready(session, pod_id)
+            logs = await fetch_pod_boot_logs(session, pod_id)
+        return format_pod_status_payload(pod_obj, ready, logs)
 
 
 @app.get("/", response_class=FileResponse)
@@ -306,28 +679,71 @@ async def get_comfy_output(
     subfolder: str = "",
     media_kind: str = "video",
     download: bool = False,
+    pod_id: str = "",
 ) -> FileResponse:
-    try:
-        output_path = build_output_path(
-            os.environ.get("COMFY_OUTPUT_DIR", "/comfyui/output"),
+    safe_name = Path(filename).name
+    cached_path = CACHED_OUTPUTS_DIR / f"{pod_id or 'local'}_{safe_name}"
+    media_type = guess_media_type(filename, media_kind)
+
+    if is_local_comfy_environment():
+        try:
+            output_path = build_output_path(
+                os.environ.get("COMFY_OUTPUT_DIR", "/comfyui/output"),
+                {
+                    "filename": filename,
+                    "subfolder": subfolder,
+                    "media_kind": media_kind,
+                },
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        if output_path.exists():
+            return FileResponse(
+                output_path,
+                media_type=media_type,
+                filename=safe_name if download else None,
+            )
+
+    if cached_path.exists():
+        return FileResponse(
+            cached_path,
+            media_type=media_type,
+            filename=safe_name if download else None,
+        )
+
+    timeout = aiohttp.ClientTimeout(total=60)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        target_pod_id = pod_id.strip()
+        if not target_pod_id:
+            pod = await find_ltx_pod(session)
+            if pod and pod.get("id"):
+                target_pod_id = pod["id"]
+        if not target_pod_id:
+            raise HTTPException(status_code=404, detail="Generated output file not found.")
+
+        query = urlencode(
             {
                 "filename": filename,
                 "subfolder": subfolder,
                 "media_kind": media_kind,
-            },
+            }
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    if not output_path.exists():
-        raise HTTPException(status_code=404, detail="Generated output file not found.")
-
-    media_type = guess_media_type(filename, media_kind)
-    return FileResponse(
-        output_path,
-        media_type=media_type,
-        filename=filename if download else None,
-    )
+        remote_url = f"https://{target_pod_id}-7777.proxy.runpod.net/api/comfy-output?{query}"
+        async with session.get(remote_url) as resp:
+            if resp.status >= 400:
+                raise HTTPException(
+                    status_code=resp.status,
+                    detail="Failed to fetch generated output from remote Pod.",
+                )
+            data = await resp.read()
+            cached_path = CACHED_OUTPUTS_DIR / f"{target_pod_id}_{safe_name}"
+            cached_path.write_bytes(data)
+            return FileResponse(
+                cached_path,
+                media_type=media_type,
+                filename=safe_name if download else None,
+            )
 
 
 @app.get("/health")
@@ -473,6 +889,44 @@ async def get_endpoint_status(
 
 @app.post("/api/pod-submit")
 async def submit_payload_in_pod(request: PodSubmitRequest) -> dict[str, object]:
+    if not is_local_comfy_environment():
+        timeout = aiohttp.ClientTimeout(total=request.timeout_seconds)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            pod = await find_ltx_pod(session)
+            if not pod or pod.get("status") != "RUNNING" or not pod.get("id"):
+                raise HTTPException(
+                    status_code=503,
+                    detail="LTX Pod is not running. Deploy or start the Pod in the Pod Control panel first.",
+                )
+            pod_id = pod["id"]
+            if not await check_remote_pod_ready(session, pod_id):
+                raise HTTPException(
+                    status_code=503,
+                    detail="LTX Pod is still bootstrapping models and ComfyUI. Please wait until status shows Ready.",
+                )
+            remote_submit_url = f"https://{pod_id}-7777.proxy.runpod.net/api/pod-submit"
+            try:
+                async with session.post(
+                    remote_submit_url,
+                    json={"payload": request.payload, "timeout_seconds": request.timeout_seconds},
+                ) as resp:
+                    raw_body = await resp.text()
+                    if resp.status >= 400:
+                        try:
+                            err_json = json.loads(raw_body)
+                            detail = err_json.get("detail") or raw_body
+                        except json.JSONDecodeError:
+                            detail = raw_body or "Remote Pod rejected workflow submission."
+                        raise HTTPException(status_code=resp.status, detail=detail)
+                    data = json.loads(raw_body)
+                    if isinstance(data.get("response_json"), dict):
+                        data["response_json"]["pod_id"] = pod_id
+                    return data
+            except aiohttp.ClientError as exc:
+                raise HTTPException(
+                    status_code=502, detail=f"Remote Pod submit failed: {exc}"
+                ) from exc
+
     workflow_input = request.payload.get("input", {})
     workflow = workflow_input.get("workflow")
     images = workflow_input.get("images")
@@ -555,6 +1009,69 @@ async def get_pod_submit_status(
     prompt_id: str,
     node: str = "",
 ) -> dict[str, object]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", prompt_id):
+        raise HTTPException(status_code=400, detail="Invalid prompt ID.")
+
+    if not is_local_comfy_environment():
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            pod = await find_ltx_pod(session)
+            if not pod or pod.get("status") != "RUNNING" or not pod.get("id"):
+                raise HTTPException(
+                    status_code=503,
+                    detail="LTX Pod is no longer running.",
+                )
+            pod_id = pod["id"]
+            remote_status_url = (
+                f"https://{pod_id}-7777.proxy.runpod.net/api/pod-submit/{prompt_id}"
+            )
+            try:
+                async with session.get(remote_status_url) as resp:
+                    raw_body = await resp.text()
+                    if resp.status >= 400:
+                        try:
+                            err_json = json.loads(raw_body)
+                            detail = err_json.get("detail") or raw_body
+                        except json.JSONDecodeError:
+                            detail = raw_body or "Remote Pod status check failed."
+                        raise HTTPException(status_code=resp.status, detail=detail)
+                    data = json.loads(raw_body)
+                    rjson = data.get("response_json") or {}
+                    output = rjson.get("output") or {}
+                    for kind in ("videos", "images"):
+                        for item in output.get(kind) or []:
+                            for url_key in ("url", "download_url"):
+                                val = item.get(url_key) or ""
+                                if val.startswith("/"):
+                                    val = val.lstrip("/")
+                                if val and f"pod_id={pod_id}" not in val:
+                                    sep = "&" if "?" in val else "?"
+                                    val = f"{val}{sep}pod_id={pod_id}"
+                                item[url_key] = val
+                            fname = item.get("filename")
+                            if fname:
+                                safe_name = Path(fname).name
+                                cached_path = CACHED_OUTPUTS_DIR / f"{pod_id}_{safe_name}"
+                                if not cached_path.exists():
+                                    dl_q = urlencode(
+                                        {
+                                            "filename": fname,
+                                            "subfolder": item.get("subfolder", ""),
+                                            "media_kind": "video" if kind == "videos" else "image",
+                                        }
+                                    )
+                                    fetch_url = f"https://{pod_id}-7777.proxy.runpod.net/api/comfy-output?{dl_q}"
+                                    try:
+                                        async with session.get(fetch_url) as media_resp:
+                                            if media_resp.status == 200:
+                                                cached_path.write_bytes(await media_resp.read())
+                                    except Exception:
+                                        pass
+                    return data
+            except aiohttp.ClientError as exc:
+                raise HTTPException(
+                    status_code=502, detail=f"Remote Pod status request failed: {exc}"
+                ) from exc
     try:
         target_node = get_pod_submit_node()
     except RuntimeError as exc:

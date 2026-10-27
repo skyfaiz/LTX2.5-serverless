@@ -16,12 +16,55 @@
     <div class="page-shell">
       <main class="app-shell">
         <section class="hero">
-          <p class="eyebrow">LTX 2.5 payload builder</p>
+          <p class="eyebrow">LTX 2.5 Studio · On-Demand GPU Pod</p>
           <h1>What will you imagine?</h1>
           <p class="hero-copy">
-            Generate the JSON body for the LTX image-to-video API without doing
-            frame math by hand like a prisoner.
+            Deploy your dedicated LTX 2.5 GPU Pod on demand with persistent model storage, generate videos, and stop or terminate the Pod when finished.
           </p>
+        </section>
+
+        <section id="pod-control-panel" class="panel pod-control-panel" aria-label="RunPod GPU Pod Control">
+          <div class="pod-control-header">
+            <div class="pod-control-title-wrap">
+              <div class="pod-badge-row">
+                <span class="payload-label">RunPod GPU Pod</span>
+                <span id="pod-status-badge" class="pod-status-badge pod-status-idle">Checking status...</span>
+              </div>
+              <h2 id="pod-title">LTX 2.5 Dedicated Pod</h2>
+              <p id="pod-subtitle" class="pod-subtitle">
+                Persistent Volume: <code>ltx25-models (vkqbtcijow · 150 GB · EUR-IS-2 → /workspace)</code>
+              </p>
+            </div>
+            <div class="pod-actions-wrap">
+              <select id="pod-gpu-select" class="pod-gpu-select" aria-label="Select GPU Type">
+                <option value="NVIDIA L40S">NVIDIA L40S · 48 GB VRAM ($1.09/hr)</option>
+                <option value="NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 2g.48gb">RTX PRO 6000 MIG · 48 GB VRAM ($1.29/hr)</option>
+                <option value="NVIDIA RTX PRO 6000 Blackwell Server Edition">RTX PRO 6000 Blackwell · 96 GB VRAM ($2.49/hr)</option>
+              </select>
+              <button id="pod-deploy-btn" class="pod-btn pod-btn-primary" type="button">
+                Deploy Pod
+              </button>
+              <button id="pod-start-btn" class="pod-btn pod-btn-primary" type="button" hidden>
+                Start Pod
+              </button>
+              <button id="pod-stop-btn" class="pod-btn pod-btn-warning" type="button" hidden>
+                Stop Pod
+              </button>
+              <button id="pod-terminate-btn" class="pod-btn pod-btn-danger" type="button" hidden>
+                Terminate Pod
+              </button>
+              <a id="pod-comfy-link" class="pod-btn pod-btn-secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>
+                ComfyUI ↗
+              </a>
+              <button id="pod-refresh-btn" class="pod-btn pod-btn-secondary" type="button" title="Refresh Pod status">
+                ↻
+              </button>
+            </div>
+          </div>
+          <details id="pod-logs-details" class="pod-logs-details" hidden>
+            <summary class="pod-logs-summary">Live Pod boot &amp; model status logs</summary>
+            <pre id="pod-logs-output" class="pod-logs-output">Waiting for container logs...</pre>
+          </details>
         </section>
 
         <section class="mode-toggle" aria-label="Generation mode">
