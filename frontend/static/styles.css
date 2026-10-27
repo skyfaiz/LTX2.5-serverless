@@ -968,6 +968,16 @@ input[type="range"]::-moz-range-thumb {
   font-family: inherit;
 }
 
+.pod-meta {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pod-meta-warn {
+  color: #fbbf24;
+}
+
 .pod-status-badge {
   display: inline-flex;
   align-items: center;

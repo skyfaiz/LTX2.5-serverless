@@ -67,6 +67,7 @@ const advancedResetButton = document.querySelector("#advanced-reset");
 const podStatusBadge = document.querySelector("#pod-status-badge");
 const podTitle = document.querySelector("#pod-title");
 const podSubtitle = document.querySelector("#pod-subtitle");
+const podMeta = document.querySelector("#pod-meta");
 const podGpuSelect = document.querySelector("#pod-gpu-select");
 const podDeployBtn = document.querySelector("#pod-deploy-btn");
 const podStartBtn = document.querySelector("#pod-start-btn");
@@ -323,12 +324,20 @@ function renderPodStatus(responseJson) {
   const status = responseJson?.status || "";
   const hasOutput = Boolean(responseJson?.output);
   const renderTimeSec = responseJson?.metadata?.render_time_sec;
+  const completedClock =
+    responseJson?.metadata?.completed_clock ||
+    formatClock(responseJson?.metadata?.completed_at);
 
   if (hasOutput) {
-    responseStatus.textContent =
+    const timeCopy =
       typeof renderTimeSec === "number"
-        ? `Generation time: ${renderTimeSec.toFixed(2)}s`
-        : "Generation complete.";
+        ? `in ${renderTimeSec.toFixed(2)}s`
+        : "";
+    const clockCopy = completedClock ? ` at ${completedClock}` : "";
+    responseStatus.textContent = `Generation complete ${timeCopy}${clockCopy}.`.replace(
+      /\s+/g,
+      " "
+    );
     responseStatus.hidden = false;
     return;
   }
@@ -431,11 +440,108 @@ async function pollPodSubmitStatus(promptId, nodeUsed) {
   throw new Error("Pod run timed out while waiting for ComfyUI history.");
 }
 
+function formatClock(iso) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString();
+}
+
+function formatCountdown(seconds) {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds)) return "";
+  const total = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${minutes}m ${String(secs).padStart(2, "0")}s`;
+}
+
+function describeRun(run) {
+  if (!run) return "";
+  const duration = run.duration_display || formatCountdown(run.duration_seconds);
+  const reason =
+    run.reason === "idle-timeout"
+      ? "auto-terminated after idle timeout"
+      : "terminated";
+  const clock = run.terminated_clock || formatClock(run.terminated_at);
+  return `Last Pod run: ${duration} (${reason}${clock ? ` at ${clock}` : ""})`;
+}
+
+function renderPodMeta(data, tickOnly = false) {
+  if (!podMeta) return;
+  const idle = data?.idle || {};
+  const pod = data?.pod || null;
+  const parts = [];
+
+  if (pod && pod.runtime_display) {
+    parts.push(`Pod running for ${pod.runtime_display}`);
+  }
+  if (idle.enabled) {
+    if (pod && pod.phase === "READY") {
+      let remaining =
+        typeof idle.remaining_seconds === "number"
+          ? idle.remaining_seconds
+          : idle.timeout_seconds;
+      if (typeof state.podIdleDeadline === "number") {
+        remaining = Math.max(0, (state.podIdleDeadline - Date.now()) / 1000);
+      }
+      parts.push(
+        `Auto-terminate in ${formatCountdown(remaining)} with no job (idle timeout ${formatCountdown(idle.timeout_seconds)})`
+      );
+    } else if (!pod && idle.auto_terminated_at) {
+      parts.push(
+        `Auto-terminated ${formatClock(idle.auto_terminated_at)} after ${formatCountdown(idle.timeout_seconds)} idle`
+      );
+    } else {
+      parts.push(`Idle auto-terminate: ${formatCountdown(idle.timeout_seconds)}`);
+    }
+  } else {
+    parts.push("Idle auto-terminate disabled");
+  }
+
+  const lastRun = data?.last_run;
+  if (!pod && lastRun) {
+    parts.push(describeRun(lastRun));
+  }
+
+  podMeta.textContent = parts.join(" · ");
+  podMeta.hidden = parts.length === 0;
+  if (!tickOnly) {
+    podMeta.classList.toggle(
+      "pod-meta-warn",
+      Boolean(idle.enabled && pod && pod.phase === "READY" && state.podIdleDeadline)
+    );
+  }
+}
+
+function startPodIdleTicker() {
+  if (state.podIdleTicker) return;
+  state.podIdleTicker = window.setInterval(() => {
+    if (typeof state.podIdleDeadline !== "number") return;
+    if (Date.now() >= state.podIdleDeadline) {
+      state.podIdleDeadline = null;
+      refreshPodStatus();
+      return;
+    }
+    if (state.lastPodStatusData) {
+      renderPodMeta(state.lastPodStatusData, true);
+    }
+  }, 1000);
+}
+
 function renderPodControlState(data) {
   const pod = data?.pod || null;
   state.pod = pod;
+  state.lastPodStatusData = data;
   const vol = data?.default_volume || {};
   const logs = data?.logs || [];
+  const idle = data?.idle || {};
+  state.podIdleDeadline =
+    idle.enabled && pod && pod.phase === "READY" &&
+    typeof idle.remaining_seconds === "number"
+      ? Date.now() + idle.remaining_seconds * 1000
+      : null;
+  startPodIdleTicker();
+  renderPodMeta(data);
 
   if (!pod) {
     podStatusBadge.textContent = "Not Deployed ($0/hr compute)";
