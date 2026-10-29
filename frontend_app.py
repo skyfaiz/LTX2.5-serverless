@@ -95,6 +95,11 @@ LTX_VOLUME_KIND = os.environ.get("LTX_VOLUME_KIND", "global").strip().lower()
 # Global volumes mount in any data center; leave empty to let the scheduler pick.
 LTX_DATA_CENTER_ID = os.environ.get("LTX_DATA_CENTER_ID", "").strip()
 LTX_MOUNT_PATH = os.environ.get("LTX_MOUNT_PATH", "/workspace").strip()
+# Pod deployment stays off while the models volume is being rebuilt;
+# set LTX_POD_DEPLOY_ENABLED=true to bring the service back.
+LTX_POD_DEPLOY_ENABLED = os.environ.get(
+    "LTX_POD_DEPLOY_ENABLED", "false"
+).strip().lower() in ("1", "true", "yes", "on")
 LTX_HF_SECRET_REF = os.environ.get(
     "LTX_HF_SECRET_REF", "{{ RUNPOD_SECRET_hf_access_token }}"
 ).strip()
@@ -816,6 +821,7 @@ def format_pod_status_payload(
             "logs": [],
             "default_volume": default_vol,
             "gpu_options": LTX_GPU_OPTIONS,
+            "deploy_enabled": LTX_POD_DEPLOY_ENABLED,
             "idle": pod_idle_payload(False),
             "last_run": POD_RUN_HISTORY[0] if POD_RUN_HISTORY else None,
             "run_history": POD_RUN_HISTORY[:5],
@@ -863,6 +869,7 @@ def format_pod_status_payload(
         "logs": logs,
         "default_volume": default_vol,
         "gpu_options": LTX_GPU_OPTIONS,
+        "deploy_enabled": LTX_POD_DEPLOY_ENABLED,
         "idle": pod_idle_payload(status == "RUNNING" and ready),
         "last_run": POD_RUN_HISTORY[0] if POD_RUN_HISTORY else None,
         "run_history": POD_RUN_HISTORY[:5],
@@ -890,6 +897,14 @@ async def get_pod_status_endpoint() -> dict[str, Any]:
 
 @app.post("/api/pod/deploy")
 async def deploy_pod_endpoint(request: PodDeployRequest) -> dict[str, Any]:
+    if not LTX_POD_DEPLOY_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "LTX 2.5 pod deployment is temporarily out of service while "
+                "the models volume is being rebuilt. Check back soon."
+            ),
+        )
     timeout = aiohttp.ClientTimeout(total=30)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         existing = await find_ltx_pod(session)

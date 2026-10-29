@@ -543,18 +543,34 @@ function renderPodControlState(data) {
   startPodIdleTicker();
   renderPodMeta(data);
 
+  const deployEnabled = data?.deploy_enabled !== false;
+  state.deployEnabled = deployEnabled;
+  const oosBanner = document.querySelector("#oos-banner");
+  if (oosBanner) oosBanner.hidden = deployEnabled;
+
   if (!pod) {
-    podStatusBadge.textContent = "Not Deployed ($0/hr compute)";
-    podStatusBadge.className = "pod-status-badge pod-status-idle";
-    podTitle.textContent = "No LTX 2.5 Pod Active";
-    const volLabel =
-      vol.kind === "global"
-        ? `${vol.name || "videoalpha-models"} (${vol.id || "cmvtrnt3d000207jq49ta8tvj"} · global · mounts at ${vol.mount_path || "/workspace"})`
-        : `${vol.name || "ltx25-models"} (${vol.id || "vkqbtcijow"} · ${vol.size_gb || 150} GB · ${vol.data_center_id || "EUR-IS-2"} → ${vol.mount_path || "/workspace"})`;
-    podSubtitle.innerHTML = `Shared models volume ready: <code>${volLabel}</code>`;
-    podGpuSelect.hidden = false;
-    podDeployBtn.hidden = false;
-    podDeployBtn.disabled = state.podActionBusy;
+    if (!deployEnabled) {
+      podStatusBadge.textContent = "Out of Service";
+      podStatusBadge.className = "pod-status-badge pod-status-stopped";
+      podTitle.textContent = "LTX 2.5 is temporarily out of service";
+      podSubtitle.innerHTML =
+        "Pod deployment is disabled while the models volume is being rebuilt. Check back soon.";
+      podGpuSelect.hidden = true;
+      podDeployBtn.hidden = true;
+    } else {
+      podStatusBadge.textContent = "Not Deployed ($0/hr compute)";
+      podStatusBadge.className = "pod-status-badge pod-status-idle";
+      podTitle.textContent = "No LTX 2.5 Pod Active";
+      const volLabel =
+        vol.kind === "global"
+          ? `${vol.name || "videoalpha-models"} (${vol.id || "cmvtrnt3d000207jq49ta8tvj"} · global · mounts at ${vol.mount_path || "/workspace"})`
+          : `${vol.name || "ltx25-models"} (${vol.id || "vkqbtcijow"} · ${vol.size_gb || 150} GB · ${vol.data_center_id || "EUR-IS-2"} → ${vol.mount_path || "/workspace"})`;
+      podSubtitle.innerHTML = `Shared models volume ready: <code>${volLabel}</code>`;
+      podGpuSelect.hidden = false;
+      podGpuSelect.disabled = false;
+      podDeployBtn.hidden = false;
+      podDeployBtn.disabled = state.podActionBusy;
+    }
     podStartBtn.hidden = true;
     podStopBtn.hidden = true;
     podTerminateBtn.hidden = true;
@@ -625,6 +641,13 @@ async function refreshPodStatus() {
 }
 
 async function deployPodFromUi() {
+  if (state.deployEnabled === false) {
+    setFeedback(
+      "LTX 2.5 is temporarily out of service while the models volume is being rebuilt.",
+      "error"
+    );
+    return;
+  }
   state.podActionBusy = true;
   podDeployBtn.disabled = true;
   podDeployBtn.textContent = "Deploying...";
