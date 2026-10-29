@@ -85,7 +85,7 @@ RUNPOD_MCP_URL = os.environ.get("RUNPOD_MCP_URL", "https://mcp.runpod.io/").stri
 LTX_POD_NAME = os.environ.get("LTX_POD_NAME", "ltx25-pod").strip()
 LTX_POD_IMAGE = os.environ.get("LTX_POD_IMAGE", "notrius/ltx-2.5-serverless:cu130").strip()
 LTX_VOLUME_ID = os.environ.get(
-    "LTX_VOLUME_ID", "cmvtrnt3d000207jq49ta8tvj"
+    "LTX_VOLUME_ID", "cmvtuxnsj000007l0gj0w1v8e"
 ).strip()
 LTX_VOLUME_NAME = os.environ.get(
     "LTX_VOLUME_NAME", "videoalpha-models"
