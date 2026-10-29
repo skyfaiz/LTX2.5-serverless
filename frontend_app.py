@@ -84,10 +84,16 @@ DEFAULT_RUNPOD_API_KEY = (
 RUNPOD_MCP_URL = os.environ.get("RUNPOD_MCP_URL", "https://mcp.runpod.io/").strip()
 LTX_POD_NAME = os.environ.get("LTX_POD_NAME", "ltx25-pod").strip()
 LTX_POD_IMAGE = os.environ.get("LTX_POD_IMAGE", "notrius/ltx-2.5-serverless:cu130").strip()
-LTX_VOLUME_ID = os.environ.get("LTX_VOLUME_ID", "vkqbtcijow").strip()
-LTX_VOLUME_NAME = os.environ.get("LTX_VOLUME_NAME", "ltx25-models").strip()
-LTX_VOLUME_SIZE_GB = int(os.environ.get("LTX_VOLUME_SIZE_GB", "165"))
-LTX_DATA_CENTER_ID = os.environ.get("LTX_DATA_CENTER_ID", "EUR-IS-2").strip()
+LTX_VOLUME_ID = os.environ.get(
+    "LTX_VOLUME_ID", "cmvtrnt3d000207jq49ta8tvj"
+).strip()
+LTX_VOLUME_NAME = os.environ.get(
+    "LTX_VOLUME_NAME", "videoalpha-models"
+).strip()
+LTX_VOLUME_SIZE_GB = int(os.environ.get("LTX_VOLUME_SIZE_GB", "0"))
+LTX_VOLUME_KIND = os.environ.get("LTX_VOLUME_KIND", "global").strip().lower()
+# Global volumes mount in any data center; leave empty to let the scheduler pick.
+LTX_DATA_CENTER_ID = os.environ.get("LTX_DATA_CENTER_ID", "").strip()
 LTX_MOUNT_PATH = os.environ.get("LTX_MOUNT_PATH", "/workspace").strip()
 LTX_HF_SECRET_REF = os.environ.get(
     "LTX_HF_SECRET_REF", "{{ RUNPOD_SECRET_hf_access_token }}"
@@ -801,6 +807,7 @@ def format_pod_status_payload(
         "size_gb": LTX_VOLUME_SIZE_GB,
         "data_center_id": LTX_DATA_CENTER_ID,
         "mount_path": LTX_MOUNT_PATH,
+        "kind": LTX_VOLUME_KIND,
     }
     if not pod:
         return {
@@ -825,9 +832,10 @@ def format_pod_status_payload(
     else:
         phase = status
 
-    net_mounts = ((pod.get("mounts") or {}).get("network")) or []
-    vol_id = net_mounts[0].get("volumeId") if net_mounts else LTX_VOLUME_ID
-    mount_path = net_mounts[0].get("path") if net_mounts else LTX_MOUNT_PATH
+    mounts = pod.get("mounts") or {}
+    vol_mounts = (mounts.get("network") or []) + (mounts.get("global") or [])
+    vol_id = vol_mounts[0].get("volumeId") if vol_mounts else LTX_VOLUME_ID
+    mount_path = vol_mounts[0].get("path") if vol_mounts else LTX_MOUNT_PATH
     gpu_info = pod.get("gpu") or {}
     runtime = pod_runtime_seconds(pod)
 
@@ -910,58 +918,72 @@ async def deploy_pod_endpoint(request: PodDeployRequest) -> dict[str, Any]:
 
         volume_id = request.volume_id.strip() or LTX_VOLUME_ID
         dc_id = request.data_center_id.strip() or LTX_DATA_CENTER_ID
-        preferred_gpu = request.gpu_id.strip() or LTX_GPU_OPTIONS[0]["id"]
-        candidate_gpus = [preferred_gpu] + [
-            g["id"] for g in LTX_GPU_OPTIONS if g["id"] != preferred_gpu
-        ]
+        gpu_id = request.gpu_id.strip() or LTX_GPU_OPTIONS[0]["id"]
+        known_gpu_ids = {g["id"] for g in LTX_GPU_OPTIONS}
+        if gpu_id not in known_gpu_ids:
+            where = f"data center {dc_id}" if dc_id else "any data center"
+            raise HTTPException(
+                status_code=400,
+                detail=f"GPU '{gpu_id}' is not available in {where} "
+                "right now. Choose one of: "
+                + ", ".join(sorted(known_gpu_ids)),
+            )
 
-        last_error = "No 48GB+ GPU stock available in data center."
-        for gpu_id in candidate_gpus:
-            create_body = {
-                "name": LTX_POD_NAME,
-                "image": LTX_POD_IMAGE,
-                "cloud": "SECURE",
-                "dataCenterIds": [dc_id],
-                "disk": 60,
-                "ports": ["7777/http", "8188/http"],
-                "mounts": {
-                    "network": [
-                        {
-                            "volumeId": volume_id,
-                            "path": LTX_MOUNT_PATH,
-                        }
-                    ]
-                },
-                "gpu": {
-                    "id": gpu_id,
-                    "count": 1,
-                    "minCudaVersion": "13.0",
-                },
-                "env": {
-                    "RUN_MODE": "pod",
-                    "PERSIST_WORKSPACE": "true",
-                    "LTX25_PRELOAD_VARIANT": "distilled-int8",
-                    "LTX25_PRELOAD_PROMPT_ENHANCER": "true",
-                    "COMFY_LOG_LEVEL": "INFO",
-                    "COMFY_MODEL_DISCOVERY_TIMEOUT_SECONDS": "300",
-                    "HUGGINGFACE_ACCESS_TOKEN": LTX_HF_SECRET_REF,
-                },
-            }
-            try:
-                created = await call_runpod_mcp(
-                    session, "create-pod", {"body": create_body}
-                )
-                if created and created.get("id"):
-                    verified = await call_runpod_mcp(
-                        session, "get-pod", {"id": created["id"]}
-                    )
-                    mark_pod_activity("pod-deploy")
-                    return format_pod_status_payload(verified or created, False, [])
-            except HTTPException as exc:
-                last_error = exc.detail
-                continue
+        mounts: dict[str, Any] = {}
+        if LTX_VOLUME_KIND == "global":
+            mounts["global"] = [
+                {"volumeId": volume_id, "path": LTX_MOUNT_PATH}
+            ]
+        else:
+            mounts["network"] = [
+                {"volumeId": volume_id, "path": LTX_MOUNT_PATH}
+            ]
+        create_body = {
+            "name": LTX_POD_NAME,
+            "image": LTX_POD_IMAGE,
+            "cloud": "SECURE",
+            "disk": 60,
+            "ports": ["7777/http", "8188/http"],
+            "mounts": mounts,
+            "gpu": {
+                "id": gpu_id,
+                "count": 1,
+                "minCudaVersion": "13.0",
+            },
+            "env": {
+                "RUN_MODE": "pod",
+                "PERSIST_WORKSPACE": "true",
+                "LTX25_PRELOAD_VARIANT": "distilled-int8",
+                "LTX25_PRELOAD_PROMPT_ENHANCER": "true",
+                "COMFY_LOG_LEVEL": "INFO",
+                "COMFY_MODEL_DISCOVERY_TIMEOUT_SECONDS": "300",
+                "HUGGINGFACE_ACCESS_TOKEN": LTX_HF_SECRET_REF,
+            },
+        }
+        if dc_id:
+            create_body["dataCenterIds"] = [dc_id]
+        try:
+            created = await call_runpod_mcp(
+                session, "create-pod", {"body": create_body}
+            )
+        except HTTPException as exc:
+            where = f"in data center {dc_id}" if dc_id else "in any data center"
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Could not deploy '{gpu_id}' {where}: "
+                    f"{exc.detail} Pick a different GPU and try again."
+                ),
+            ) from exc
 
-        raise HTTPException(status_code=503, detail=f"Pod deployment failed: {last_error}")
+        if not created or not created.get("id"):
+            raise HTTPException(
+                status_code=503,
+                detail=f"Pod deployment for '{gpu_id}' returned no pod id.",
+            )
+        verified = await call_runpod_mcp(session, "get-pod", {"id": created["id"]})
+        mark_pod_activity("pod-deploy")
+        return format_pod_status_payload(verified or created, False, [])
 
 
 @app.post("/api/pod/action")

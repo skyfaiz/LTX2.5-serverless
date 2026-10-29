@@ -547,7 +547,11 @@ function renderPodControlState(data) {
     podStatusBadge.textContent = "Not Deployed ($0/hr compute)";
     podStatusBadge.className = "pod-status-badge pod-status-idle";
     podTitle.textContent = "No LTX 2.5 Pod Active";
-    podSubtitle.innerHTML = `Persistent Volume ready: <code>${vol.name || "ltx25-models"} (${vol.id || "vkqbtcijow"} · ${vol.size_gb || 150} GB · ${vol.data_center_id || "EUR-IS-2"} → ${vol.mount_path || "/workspace"})</code>`;
+    const volLabel =
+      vol.kind === "global"
+        ? `${vol.name || "videoalpha-models"} (${vol.id || "cmvtrnt3d000207jq49ta8tvj"} · global · mounts at ${vol.mount_path || "/workspace"})`
+        : `${vol.name || "ltx25-models"} (${vol.id || "vkqbtcijow"} · ${vol.size_gb || 150} GB · ${vol.data_center_id || "EUR-IS-2"} → ${vol.mount_path || "/workspace"})`;
+    podSubtitle.innerHTML = `Shared models volume ready: <code>${volLabel}</code>`;
     podGpuSelect.hidden = false;
     podDeployBtn.hidden = false;
     podDeployBtn.disabled = state.podActionBusy;
@@ -651,7 +655,7 @@ async function deployPodFromUi() {
 async function triggerPodActionFromUi(action) {
   if (action === "terminate") {
     const ok = window.confirm(
-      "Terminate the LTX 2.5 Pod? Compute billing stops immediately and all LTX models remain safely persisted on the network volume (vkqbtcijow)."
+      "Terminate the LTX 2.5 Pod? Compute billing stops immediately and all LTX models remain safely persisted on the shared models volume."
     );
     if (!ok) return;
   }
@@ -676,7 +680,7 @@ async function triggerPodActionFromUi(action) {
     renderPodControlState(data);
     setFeedback(
       action === "terminate"
-        ? "Pod terminated. Persistent models remain saved on network volume vkqbtcijow."
+        ? "Pod terminated. Models remain saved on the shared models volume."
         : `Pod ${action} succeeded.`,
       "success"
     );
